@@ -53,7 +53,7 @@ Access the document embeddings generated from the DTM
 """
 
 from gensim import utils, matutils
-from gensim.models import ldamodel
+from gensim.models import ldamodel, ldamulticore
 import numpy as np
 from scipy.special import digamma, gammaln
 from scipy import optimize
@@ -67,7 +67,8 @@ class LdaSeqModel(utils.SaveLoad):
     """Estimate Dynamic Topic Model parameters based on a training corpus."""
     def __init__(self, corpus=None, time_slice=None, id2word=None, alphas=0.01, num_topics=10,
                  initialize='gensim', sstats=None, lda_model=None, obs_variance=0.5, chain_variance=0.005, passes=10,
-                 random_state=None, lda_inference_max_iter=25, em_min_iter=6, em_max_iter=20, chunksize=100):
+                 random_state=None, lda_inference_max_iter=25, em_min_iter=6, em_max_iter=20, chunksize=100,
+                 workers=None):
         """
 
         Parameters
@@ -115,6 +116,9 @@ class LdaSeqModel(utils.SaveLoad):
             Maximum number of iterations until converge of the Expectation-Maximization algorithm.
         chunksize : int, optional
             Number of documents in the corpus do be processed in in a chunk.
+        workers : int, optional
+            Number of cores to use for a multicore LDA model. If "None", uses a single-core LdaModel.
+            Otherwise, sets the workers argument for LdaMulticore.
 
         """
         self.id2word = id2word
@@ -147,6 +151,8 @@ class LdaSeqModel(utils.SaveLoad):
         self.num_time_slices = len(time_slice)
         self.alphas = np.full(num_topics, alphas)
 
+        self.workers = workers
+
         # topic_chains contains for each topic a 'state space language model' object
         # which in turn has information about each topic
         # the sslm class is described below and contains information
@@ -170,11 +176,19 @@ class LdaSeqModel(utils.SaveLoad):
             self.max_doc_len = max(len(line) for line in corpus)
 
             if initialize == 'gensim':
-                lda_model = ldamodel.LdaModel(
-                    corpus, id2word=self.id2word, num_topics=self.num_topics,
-                    passes=passes, alpha=self.alphas, random_state=random_state,
-                    dtype=np.float64
-                )
+                if workers is None:
+                    lda_model = ldamodel.LdaModel(
+                        corpus, id2word=self.id2word, num_topics=self.num_topics,
+                        passes=passes, alpha=self.alphas, random_state=random_state,
+                        dtype=np.float64
+                    )
+                else:
+                    lda_model = ldamulticore.LdaMulticore(
+                        corpus, id2word=self.id2word, num_topics=self.num_topics,
+                        passes=passes, alpha=self.alphas, random_state=random_state,
+                        dtype=np.float64, workers=workers
+                    )
+                
                 self.sstats = np.transpose(lda_model.state.sstats)
             if initialize == 'ldamodel':
                 self.sstats = np.transpose(lda_model.state.sstats)
@@ -342,7 +356,13 @@ class LdaSeqModel(utils.SaveLoad):
         vocab_len = self.vocab_len
         bound = 0.0
 
-        lda = ldamodel.LdaModel(num_topics=num_topics, alpha=self.alphas, id2word=self.id2word, dtype=np.float64)
+        if self.workers is None:
+            lda = ldamodel.LdaModel(num_topics=num_topics, alpha=self.alphas, id2word=self.id2word, dtype=np.float64)
+        else:
+            lda = ldamulticore.LdaMulticore(num_topics=num_topics, alpha=self.alphas, id2word=self.id2word, 
+                dtype=np.float64, workers=self.workers
+            )
+
         lda.topics = np.zeros((vocab_len, num_topics))
         ldapost = LdaPost(max_doc_len=self.max_doc_len, num_topics=num_topics, lda=lda)
 
@@ -667,8 +687,14 @@ class LdaSeqModel(utils.SaveLoad):
             Probabilities for each topic in the mixture. This is essentially a point in the `num_topics - 1` simplex.
 
         """
-        lda_model = ldamodel.LdaModel(
-            num_topics=self.num_topics, alpha=self.alphas, id2word=self.id2word, dtype=np.float64)
+        if self.workers is None:
+            lda_model = ldamodel.LdaModel(
+                num_topics=self.num_topics, alpha=self.alphas, id2word=self.id2word, dtype=np.float64)
+        else:
+            lda_model = ldamulticore.LdaMulticore(
+                num_topics=self.num_topics, alpha=self.alphas, id2word=self.id2word, dtype=np.float64, 
+                workers=self.workers)
+        
         lda_model.topics = np.zeros((self.vocab_len, self.num_topics))
         ldapost = LdaPost(num_topics=self.num_topics, max_doc_len=len(doc), lda=lda_model, doc=doc)
 
